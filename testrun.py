@@ -79,7 +79,7 @@ with col1:
                     st.error(f"解析エラー: {e}")
 
 with col2:
-    if st.session_state.session_state.session_data:
+   if st.session_state.session_data:
         selected_no = st.selectbox("確認・修正中:", list(st.session_state.session_data.keys()))
         data = st.session_state.session_data[selected_no]
         
