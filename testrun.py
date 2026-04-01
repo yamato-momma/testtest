@@ -5,147 +5,161 @@ from google.oauth2 import service_account
 import io
 import json
 
-# --- ページ設定 ---
-st.set_page_config(page_title="RaceLog Pro v3", layout="wide")
+# --- 1. ページ設定と視認性重視のデザイン ---
+st.set_page_config(page_title="RaceLog Pro v3.1", layout="wide")
 
-# スタイリッシュなCSS
+# CSSで色を強制固定（白背景に白文字を防ぐ）
 st.markdown("""
     <style>
-    .stApp { background-color: #f4f7f6; }
-    .stTabs [data-baseweb="tab-list"] { background-color: #1e3a8a; border-radius: 10px; padding: 5px; }
-    .stTabs [data-baseweb="tab"] { color: white; }
-    .data-card { background-color: white; padding: 15px; border-radius: 10px; border-top: 5px solid #1e3a8a; }
+    /* 全体の背景色 */
+    .stApp { background-color: #f0f2f6 !important; }
+    
+    /* 文字色を黒・濃紺に固定 */
+    h1, h2, h3, p, span, label { color: #1e3a8a !important; font-weight: bold !important; }
+    
+    /* 入力エリアのスタイル */
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea {
+        background-color: white !important;
+        color: #333 !important;
+        border: 1px solid #1e3a8a !important;
+    }
+
+    /* ボタンのデザイン */
+    .stButton>button {
+        background-color: #1e3a8a !important;
+        color: white !important;
+        border-radius: 5px;
+        padding: 0.5rem 2rem;
+        font-weight: bold;
+    }
+
+    /* データエディタ（表）の背景 */
+    .stDataEditor { background-color: white !important; border-radius: 10px; }
+    
+    /* カード風のコンテナ */
+    .data-card {
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 認証設定 ---
+# --- 2. 認証設定 ---
 if "gcp_service_account" in st.secrets:
     info = json.loads(st.secrets["gcp_service_account"])
     credentials = service_account.Credentials.from_service_account_info(info)
     client = vision.ImageAnnotatorClient(credentials=credentials)
 else:
-    st.error("GCP Secretsが設定されていません。")
+    st.error("Secretsの設定（gcp_service_account）が見つかりません。")
     st.stop()
 
-# --- セッション保持 ---
 if 'all_sessions' not in st.session_state:
     st.session_state.all_sessions = {}
 
-# --- 高度な座標解析エンジン ---
-def get_text_near(texts, target_label, direction="below", threshold=150):
-    """
-    特定のラベル（例：'天気'）の近く（下または右）にあるテキストを抽出する
-    """
+# --- 3. 解析ロジック (タイトルの下を探す) ---
+def get_text_under_label(texts, label, y_range=150):
     target_box = None
-    for text in texts[1:]: # 0番目は全テキスト
-        if target_label in text.description:
+    for text in texts[1:]:
+        if label in text.description:
             target_box = text.bounding_poly.vertices
             break
+    if not target_box: return ""
+
+    lx = (target_box[0].x + target_box[1].x) / 2
+    ly = (target_box[2].y + target_box[3].y) / 2
     
-    if not target_box:
-        return ""
-
-    # ラベルの下辺/右辺の座標
-    base_x = (target_box[0].x + target_box[1].x) / 2
-    base_y = (target_box[2].y + target_box[3].y) / 2
-
     candidates = []
     for text in texts[1:]:
-        if target_label in text.description: continue
+        if label in text.description: continue
         box = text.bounding_poly.vertices
-        center_x = (box[0].x + box[1].x) / 2
-        center_y = (box[0].y + box[3].y) / 2
+        cx = (box[0].x + box[1].x) / 2
+        cy = (box[0].y + box[3].y) / 2
         
-        # 「下」にあるものを探すロジック
-        if direction == "below":
-            if abs(center_x - base_x) < 100 and 0 < (center_y - base_y) < threshold:
-                candidates.append((center_y, text.description))
+        # 横方向のズレが少なく、かつ一定距離「下」にあるもの
+        if abs(cx - lx) < 120 and 5 < (cy - ly) < y_range:
+            candidates.append((cy, text.description))
     
     if candidates:
-        # 最も近いものを返す
-        candidates.sort()
+        candidates.sort() # 最も近いものを選択
         return candidates[0][1]
     return ""
 
-def process_image(image_content):
-    image = vision.Image(content=image_content)
+def process_race_image(content):
+    image = vision.Image(content=content)
     response = client.document_text_detection(image=image)
     texts = response.text_annotations
-    
-    if not texts:
-        return None, None
+    if not texts: return None, None
 
-    # 1. ヘッダー情報の取得（座標ベース）
-    header_keys = [
-        "種目", "ドライバー", "走行場所", "記録", "天気", "気温", "湿度", 
-        "路面状態", "路面温度", "開始時刻", "終了時刻", "走行時間", "セッティング"
-    ]
-    header_data = {k: get_text_near(texts, k) for k in header_keys}
-    header_data["No"] = get_text_near(texts, "No", threshold=100)
-    header_data["フィードバック"] = get_text_near(texts, "ドライバーフィードバック", threshold=500)
+    # ヘッダー項目の抽出
+    keys = ["種目", "ドライバー", "走行場所", "記録", "天気", "気温", "湿度", "路面状態", "路面温度", "開始時刻", "終了時刻", "走行時間", "セッティング"]
+    h = {k: get_text_under_label(texts, k) for k in keys}
+    h["No"] = get_text_under_label(texts, "No", y_range=80)
+    h["フィードバック"] = get_text_under_label(texts, "ドライバーフィードバック", y_range=500)
 
-    # 2. テーブルデータの作成
-    rows = []
-    # OCR結果から数字とその座標をリスト化
-    all_words = []
-    for text in texts[1:]:
-        desc = text.description
-        box = text.bounding_poly.vertices
-        center_x = (box[0].x + box[1].x) / 2
-        center_y = (box[0].y + box[3].y) / 2
-        all_words.append({'text': desc, 'x': center_x, 'y': center_y})
-
+    # テーブルの空枠作成（33行）
+    cols = ["Lap", "Time", "内圧FL", "内圧FR", "内圧RL", "内圧RR", "表面温FL", "表面温FR", "表面温RL", "表面温RR", "ディスクFL", "ディスクFR", "ディスクRL", "ディスクRR", "HV前", "HV後", "LV前", "LV後"]
+    df = pd.DataFrame(columns=cols)
     for i in range(1, 34):
-        # 各行の基準点を「Lap番号」の座標から推測（簡易実装）
-        row_data = {
-            "Lap": i, "Time": "", "内圧(FL)": "", "内圧(FR)": "", "内圧(RL)": "", "内圧(RR)": "",
-            "表面温(FL)": "", "表面温(FR)": "", "表面温(RL)": "", "表面温(RR)": "",
-            "ディスク(FL)": "", "ディスク(FR)": "", "ディスク(RL)": "", "ディスク(RR)": ""
-        }
-        # ここで特定のY座標範囲にある数字をTime列などに割り振る（微調整が必要）
-        rows.append(row_data)
+        df.loc[i-1] = [i] + [""] * (len(cols)-1)
+    
+    return h, df
 
-    return header_data, pd.DataFrame(rows)
+# --- 4. メインUI ---
+st.title("🏎️ RaceLog Pro v3.1")
 
-# --- UI構築 ---
-st.title("🏎️ RaceLog Pro v3")
-
-tab1, tab2 = st.tabs(["📤 読み取り", "📊 保存データ管理"])
+tab1, tab2 = st.tabs(["📥 読み取りと修正", "📊 まとめと書き出し"])
 
 with tab1:
     col_l, col_r = st.columns([1, 1])
+    
     with col_l:
-        file = st.file_uploader("ログシート画像をアップ", type=["jpg", "png"])
+        st.subheader("1. 画像アップロード")
+        file = st.file_uploader("ログシートを選択", type=["jpg", "png", "jpeg"])
         if file:
             st.image(file, use_container_width=True)
-            if st.button("🚀 解析実行"):
-                h, t = process_image(file.read())
-                if h:
-                    key = h["No"] if h["No"] else f"Temp_{len(st.session_state.all_sessions)}"
+            if st.button("AI解析を実行"):
+                with st.spinner("位置情報を解析中..."):
+                    h, t = process_race_image(file.read())
+                    key = h["No"] if h["No"] else f"Untitled_{len(st.session_state.all_sessions)}"
                     st.session_state.all_sessions[key] = {"header": h, "table": t}
                     st.rerun()
 
-    if st.session_state.all_sessions:
-        with col_r:
-            selected_key = st.selectbox("確認・修正対象", list(st.session_state.all_sessions.keys()))
-            data = st.session_state.all_sessions[selected_key]
+    with col_r:
+        if st.session_state.all_sessions:
+            current_no = st.selectbox("確認・編集中のNo:", list(st.session_state.all_sessions.keys()))
+            sess = st.session_state.all_sessions[current_no]
             
-            st.subheader("📝 基本情報（タイトル下の値を抽出）")
-            for k, v in data["header"].items():
-                data["header"][k] = st.text_input(k, v)
+            st.subheader("2. 抽出結果の確認（タイトル下の値）")
+            # 2カラムでヘッダーを表示
+            h_col1, h_col2 = st.columns(2)
+            for i, (k, v) in enumerate(sess["header"].items()):
+                if k == "フィードバック": continue
+                target_col = h_col1 if i % 2 == 0 else h_col2
+                sess["header"][k] = target_col.text_input(k, v)
             
-            st.subheader("📊 詳細データ")
-            data["table"] = st.data_editor(data["table"], height=400)
+            sess["header"]["フィードバック"] = st.text_area("ドライバーフィードバック", sess["header"]["フィードバック"])
+
+            st.subheader("3. タイヤ・ラップデータ（表）")
+            sess["table"] = st.data_editor(sess["table"], hide_index=True)
 
 with tab2:
     if st.session_state.all_sessions:
-        ev_name = st.text_input("イベント名", "Race_Log_2026")
+        st.subheader("走行会データのエクスポート")
+        filename = st.text_input("保存ファイル名", "Circuit_Event_Result")
+        
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            for k, v in st.session_state.all_sessions.items():
-                # 1シートにヘッダーとテーブルを縦に並べる
-                df_h = pd.DataFrame(list(v["header"].items()), columns=["項目", "値"])
-                df_h.to_excel(writer, sheet_name=f"No_{k}", index=False)
-                v["table"].to_excel(writer, sheet_name=f"No_{k}", startrow=len(df_h)+2, index=False)
+            for no, data in st.session_state.all_sessions.items():
+                # ヘッダーを縦に並べる
+                df_h = pd.DataFrame(list(data["header"].items()), columns=["項目", "値"])
+                sheet_name = f"Sheet_{no}".replace("-", "_")[:31]
+                df_h.to_excel(writer, sheet_name=sheet_name, index=False)
+                # テーブルをその下に配置
+                data["table"].to_excel(writer, sheet_name=sheet_name, startrow=len(df_h)+2, index=False)
         
-        st.download_button("📈 Excelダウンロード", buf.getvalue(), f"{ev_name}.xlsx")
+        st.download_button("📈 Excelを一括ダウンロード", buf.getvalue(), f"{filename}.xlsx")
+    else:
+        st.info("解析済みのデータはありません。")
