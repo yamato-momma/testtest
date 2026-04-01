@@ -1,5 +1,4 @@
+google-generativeai
 streamlit
-google-cloud-vision
 pandas
 xlsxwriter
-google-auth
