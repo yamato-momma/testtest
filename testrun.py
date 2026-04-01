@@ -42,15 +42,21 @@ PROMPT = """
 手書き文字が読みにくい場合は、文脈から推測するか、空欄にしてください。
 """
 
-def analyze_with_gemini(image_file):
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    img = genai.upload_file(image_file) # 一時アップロード
-    response = model.generate_content([PROMPT, img])
+def analyze_with_gemini(image_path):
+    # モデル名を 'gemini-1.5-flash' に固定します（models/ や -latest を付けない）
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
-    # JSON部分のみを抽出
-    json_str = response.text.replace('```json', '').replace('```', '').strip()
+    # 画像ファイルをGeminiに読み込ませる形式に変換
+    sample_file = genai.upload_file(path=image_path, display_name="RaceSheet")
+    
+    # 解析実行（プロンプトと画像を一緒に渡す）
+    response = model.generate_content([PROMPT, sample_file])
+    
+    # レスポンスからJSON部分だけを取り出す（余計な文字を削除）
+    text = response.text
+    json_str = text.split('```json')[-1].split('```')[0].strip()
+    
     return json.loads(json_str)
-
 # --- 4. メインUI ---
 st.title("🏎️ RaceLog Pro: Gemini AI Engine")
 
