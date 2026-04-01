@@ -4,7 +4,7 @@ import google.generativeai as genai
 import io
 import json
 
-# --- 1. デザイン設定（白背景・黒文字・濃紺アクセント） ---
+# --- 1. デザイン設定（白背景・黒文字・濃紺） ---
 st.set_page_config(page_title="RaceLog Pro Gemini", layout="wide")
 st.markdown("""
     <style>
@@ -18,17 +18,15 @@ st.markdown("""
 
 # --- 2. Gemini API 設定 ---
 if "GEMINI_API_KEY" in st.secrets:
+    # 接続を安定させる設定
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.error("Streamlit Secrets に GEMINI_API_KEY が設定されていません。")
+    st.error("Secretsに GEMINI_API_KEY を設定してください。")
     st.stop()
 
 # --- 3. 解析用プロンプト ---
 PROMPT = """
 添付された「走行試験記録」の画像を解析し、全ての項目を抽出してJSON形式で出力してください。
-項目名と数値を正確に一致させてください。
-
-出力フォーマット:
 {
   "header": { "No": "", "種目": "", "ドライバー": "", "走行場所": "", "天気": "", "気温": "", "路面温度": "" },
   "table": [ {"Lap": 1, "Time": "", "P_FL": "", "P_FR": "", "T_FL": "", "T_FR": "", "HV": "", "LV": ""} ],
@@ -37,28 +35,30 @@ PROMPT = """
 """
 
 def analyze_with_gemini(uploaded_file):
-    # 【最重要】NotFound対策：複数のモデル候補を順番に試す
-    model_names = ['models/gemini-1.5-flash', 'gemini-1.5-flash', 'models/gemini-pro-vision']
-    
-    img_data = uploaded_file.getvalue()
-    image_parts = [{"mime_type": "image/jpeg", "data": img_data}]
-    
-    last_error = None
-    for m_name in model_names:
-        try:
-            model = genai.GenerativeModel(model_name=m_name)
-            response = model.generate_content([PROMPT, image_parts[0]])
-            
-            # JSON抽出
-            text = response.text
-            json_str = text.split("```json")[-1].split("```")[0].strip()
-            return json.loads(json_str)
-        except Exception as e:
-            last_error = e
-            continue # 次のモデルを試す
-            
-    st.error(f"全モデルで接続に失敗しました。最新のエラー: {last_error}")
-    return None
+    # 最新の安定版モデル名を直接指定
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # 画像データを読み込み
+        img_data = uploaded_file.getvalue()
+        
+        # 解析実行
+        response = model.generate_content([
+            PROMPT,
+            {'mime_type': 'image/jpeg', 'data': img_data}
+        ])
+        
+        # JSON抽出
+        text = response.text
+        # もしAIが余計な文言をつけてもJSONだけ抜き出す
+        start_idx = text.find('{')
+        end_idx = text.rfind('}') + 1
+        json_str = text[start_idx:end_idx]
+        return json.loads(json_str)
+        
+    except Exception as e:
+        st.error(f"解析エラー: {e}")
+        return None
 
 # --- 4. メインUI ---
 st.title("🏎️ RaceLog Pro: Gemini Engine")
@@ -66,30 +66,28 @@ st.title("🏎️ RaceLog Pro: Gemini Engine")
 if 'session_data' not in st.session_state:
     st.session_state.session_data = {}
 
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    uploaded = st.file_uploader("ログシートを選択", type=["jpg", "png", "jpeg"])
-    if uploaded:
+uploaded = st.file_uploader("ログシートを選択", type=["jpg", "png", "jpeg"])
+if uploaded:
+    col1, col2 = st.columns([1, 1])
+    with col1:
         st.image(uploaded, use_container_width=True)
         if st.button("✨ AI解析を実行"):
-            with st.spinner("AIが画像と格闘中..."):
+            with st.spinner("最新AIが解析中..."):
                 result = analyze_with_gemini(uploaded)
                 if result:
                     key = result["header"].get("No") or f"Session_{len(st.session_state.session_data)}"
                     st.session_state.session_data[key] = result
                     st.success("解析成功！")
 
-with col2:
-    if st.session_state.session_data:
-        selected_no = st.selectbox("Noを選択:", list(st.session_state.session_data.keys()))
-        data = st.session_state.session_data[selected_no]
-        
-        # 編集画面
-        st.subheader("データの確認・修正")
-        data["header"] = st.data_editor(pd.DataFrame([data["header"]]), hide_index=True).iloc[0].to_dict()
-        data["table"] = st.data_editor(pd.DataFrame(data["table"]), hide_index=True, height=400).to_dict('records')
-        data["feedback"] = st.text_area("フィードバック", data["feedback"])
+    with col2:
+        if st.session_state.session_data:
+            selected_no = st.selectbox("Noを選択:", list(st.session_state.session_data.keys()))
+            data = st.session_state.session_data[selected_no]
+            
+            st.subheader("データの確認・修正")
+            data["header"] = st.data_editor(pd.DataFrame([data["header"]]), hide_index=True).iloc[0].to_dict()
+            data["table"] = st.data_editor(pd.DataFrame(data["table"]), hide_index=True, height=400).to_dict('records')
+            data["feedback"] = st.text_area("フィードバック", data["feedback"])
 
 # --- 5. Excel出力 ---
 if st.session_state.session_data:
