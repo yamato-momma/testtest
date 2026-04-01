@@ -43,7 +43,7 @@ PROMPT = """
 """
 
 def analyze_with_gemini(image_file):
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     img = genai.upload_file(image_file) # 一時アップロード
     response = model.generate_content([PROMPT, img])
     
