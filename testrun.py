@@ -4,15 +4,13 @@ import google.generativeai as genai
 import io
 import json
 
-# --- 1. デザイン設定（視認性最優先：白背景・黒文字・濃紺） ---
-st.set_page_config(page_title="RaceLog Pro v6", layout="wide")
+# --- 1. デザイン設定 ---
+st.set_page_config(page_title="RaceLog Pro v7", layout="wide")
 st.markdown("""
     <style>
     .stApp { background-color: #ffffff !important; }
     h1, h2, h3, label, p, span { color: #1e3a8a !important; font-weight: bold !important; }
-    .stTabs [data-baseweb="tab"] { font-size: 1.1rem; font-weight: bold; }
     input, textarea { background-color: #f0f2f6 !important; color: #000000 !important; border: 1px solid #1e3a8a !important; }
-    [data-testid="stTable"] td { color: black !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -23,11 +21,9 @@ else:
     st.error("Secretsに GEMINI_API_KEY を設定してください．")
     st.stop()
 
-# --- 3. 解析用プロンプト（タイヤ別抽出を強化） ---
+# --- 3. 解析用プロンプト ---
 PROMPT = """
 走行試験記録の画像を解析し，全ての項目を抽出してJSON形式で出力してください．
-タイヤデータ(FL, FR, RL, RR)とディスク温度は，それぞれの位置ごとに独立したリストとして作成してください．
-
 {
   "header": { "No": "", "種目": "", "ドライバー": "", "走行場所": "", "天気": "", "気温": "", "路面温度": "" },
   "laps": [ {"Lap": 1, "Time": "", "HV": "", "LV": ""} ],
@@ -37,14 +33,20 @@ PROMPT = """
     "RL": [ {"Lap": 1, "Pressure": "", "SurfaceTemp": "", "DiskTemp": ""} ],
     "RR": [ {"Lap": 1, "Pressure": "", "SurfaceTemp": "", "DiskTemp": ""} ]
   },
-  "feedback": "ドライバーフィードバック"
+  "feedback": ""
 }
 """
 
 def analyze_with_gemini(uploaded_file):
-    # 【解決策】モデル名の前に models/ を付け，NotFoundを回避
     try:
-        model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
+        # 【解決策】現在利用可能なモデルをリストアップし，動くものを自動選択
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 優先順位：1.5-flash -> 1.5-pro -> その他
+        target_model = next((m for m in models if "1.5-flash" in m), 
+                            next((m for m in models if "1.5-pro" in m), models[0]))
+        
+        model = genai.GenerativeModel(model_name=target_model)
         
         img_data = uploaded_file.getvalue()
         response = model.generate_content([
@@ -53,7 +55,6 @@ def analyze_with_gemini(uploaded_file):
         ])
         
         text = response.text
-        # JSON部分を抽出
         start_idx = text.find('{')
         end_idx = text.rfind('}') + 1
         return json.loads(text[start_idx:end_idx])
@@ -62,7 +63,7 @@ def analyze_with_gemini(uploaded_file):
         return None
 
 # --- 4. メインUI ---
-st.title("🏎️ RaceLog Pro: Gemini Engine v6")
+st.title("🏎️ RaceLog Pro: Gemini Engine v7")
 
 if 'session_data' not in st.session_state:
     st.session_state.session_data = {}
@@ -70,12 +71,12 @@ if 'session_data' not in st.session_state:
 uploaded = st.file_uploader("ログシートを選択", type=["jpg", "png", "jpeg"])
 if uploaded:
     if st.button("✨ 精密解析を実行"):
-        with st.spinner("最新AIが4輪のデータを構造解析中..."):
+        with st.spinner("最適なAIモデルを自動選択して解析中..."):
             result = analyze_with_gemini(uploaded)
             if result:
                 key = result["header"].get("No") or f"Session_{len(st.session_state.session_data)}"
                 st.session_state.session_data[key] = result
-                st.success(f"解析成功！ No.{key}")
+                st.success(f"解析成功！")
 
 if st.session_state.session_data:
     selected_no = st.selectbox("確認・修正するNo:", list(st.session_state.session_data.keys()))
@@ -84,40 +85,30 @@ if st.session_state.session_data:
     tab_h, tab_l, tab_t, tab_f = st.tabs(["📋 基本情報", "⏱️ ラップタイム", "🛞 4輪個別詳細", "💬 フィードバック"])
     
     with tab_h:
-        data["header"] = st.data_editor(pd.DataFrame([data["header"]]), hide_index=True, key=f"h_{selected_no}").iloc[0].to_dict()
-    
+        data["header"] = st.data_editor(pd.DataFrame([data["header"]]), hide_index=True).iloc[0].to_dict()
     with tab_l:
-        st.subheader("ラップタイム & システム電圧")
-        data["laps"] = st.data_editor(pd.DataFrame(data["laps"]), hide_index=True, height=400, key=f"l_{selected_no}").to_dict('records')
-    
+        data["laps"] = st.data_editor(pd.DataFrame(data["laps"]), hide_index=True, height=400).to_dict('records')
     with tab_t:
-        st.info("タイヤごとのデータを個別に編集できます．")
         col_f, col_r = st.columns(2)
-        positions = ["FL", "FR", "RL", "RR"]
-        for i, pos in enumerate(positions):
-            target_col = col_f if i < 2 else col_r
-            with target_col:
+        for i, pos in enumerate(["FL", "FR", "RL", "RR"]):
+            with (col_f if i < 2 else col_r):
                 st.write(f"### 🛞 {pos}")
                 df_pos = pd.DataFrame(data["tire_data"][pos])
-                data["tire_data"][pos] = st.data_editor(df_pos, hide_index=True, key=f"edit_{pos}_{selected_no}").to_dict('records')
-
+                data["tire_data"][pos] = st.data_editor(df_pos, hide_index=True, key=f"{pos}_{selected_no}").to_dict('records')
     with tab_f:
-        data["feedback"] = st.text_area("内容", data["feedback"], height=200, key=f"f_{selected_no}")
+        data["feedback"] = st.text_area("内容", data["feedback"], height=200)
 
-    # Excel出力（シート内でも表を分離）
+    # Excel出力
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         for no, d in st.session_state.session_data.items():
             s_name = f"No_{no}".replace("-", "_")[:31]
-            # 基本情報
             pd.DataFrame(list(d["header"].items())).to_excel(writer, sheet_name=s_name, index=False, header=False)
-            # ラップタイム
             pd.DataFrame(d["laps"]).to_excel(writer, sheet_name=s_name, startrow=len(d["header"])+2, index=False)
-            
             curr_row = len(d["header"]) + len(d["laps"]) + 5
             for pos in ["FL", "FR", "RL", "RR"]:
                 pd.DataFrame([{"タイヤ位置": pos}]).to_excel(writer, sheet_name=s_name, startrow=curr_row, index=False, header=False)
                 pd.DataFrame(d["tire_data"][pos]).to_excel(writer, sheet_name=s_name, startrow=curr_row+1, index=False)
                 curr_row += len(d["tire_data"][pos]) + 3
     
-    st.download_button("📈 タイヤ別Excelをダウンロード", buf.getvalue(), f"Detailed_Log_{selected_no}.xlsx")
+    st.download_button("📈 Excelダウンロード", buf.getvalue(), f"Log_{selected_no}.xlsx")
