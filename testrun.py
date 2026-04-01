@@ -4,13 +4,14 @@ import google.generativeai as genai
 import io
 import json
 
-# --- 1. デザイン固定（視認性重視・白背景/黒文字） ---
-st.set_page_config(page_title="RaceLog Gemini Edition", layout="wide")
+# --- 1. デザイン設定（白背景に黒文字を絶対維持） ---
+st.set_page_config(page_title="RaceLog Pro Gemini", layout="wide")
 st.markdown("""
     <style>
-    .stApp { background-color: white !important; color: black !important; }
-    h1, h2, h3, label, p { color: #1e3a8a !important; font-weight: bold !important; }
+    .stApp { background-color: #ffffff !important; color: #000000 !important; }
+    h1, h2, h3, label, p, span { color: #1e3a8a !important; font-weight: bold !important; }
     .stDataFrame { border: 1px solid #1e3a8a; }
+    input, textarea { background-color: #f0f2f6 !important; color: #000000 !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -18,47 +19,54 @@ st.markdown("""
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.error("Secretsに GEMINI_API_KEY を設定してください。")
+    st.error("Streamlit Secrets に GEMINI_API_KEY が設定されていません。")
     st.stop()
 
-# --- 3. 解析用プロンプト（テンプレを学習させる） ---
+# --- 3. 解析用プロンプト ---
 PROMPT = """
-添付された走行試験記録の画像を解析し、以下の項目を正確に抽出してJSON形式で出力してください。
-特にタイヤ内圧、表面温度、電圧は、表の行（Lap 1, 2...）と列を正確に一致させてください。
+添付された走行試験記録の画像を解析し、以下の項目を正確に抽出してJSON形式のみで出力してください。
+項目名は必ず以下の英語キーを使用してください。
 
-出力フォーマット:
 {
   "header": {
-    "No": "", "種目": "", "ドライバー": "", "走行場所": "", "記録": "",
-    "天気": "", "気温": "", "湿度": "", "路面状態": "", "路面温度": "",
-    "開始時刻": "", "終了時刻": "", "走行時間": "", "セッティング": ""
+    "No": "右上のNo", "Event": "種目", "Driver": "ドライバー", "Track": "走行場所", 
+    "Weather": "天気", "Temp": "気温", "Humidity": "湿度", "Road_Cond": "路面状態", 
+    "Road_Temp": "路面温度", "Start": "開始時刻", "End": "終了時刻"
   },
   "table": [
-    {"Lap": 1, "Time": "", "内圧FL": "", "内圧FR": "", "内圧RL": "", "内圧RR": "", "表面温FL": "", "表面温FR": "", "表面温RL": "", "表面温RR": "", "ディスクFL": "", "ディスクFR": "", "ディスクRL": "", "ディスクRR": "", "HV前": "", "HV後": "", "LV前": "", "LV後": ""},
+    {"Lap": 1, "Time": "", "P_FL": "内圧FL", "P_FR": "内圧FR", "T_FL": "表面温FL", "T_FR": "表面温FR", "HV": "HV電圧", "LV": "LV電圧"},
     ... (33行分)
   ],
-  "feedback": ""
+  "feedback": "ドライバーフィードバックの内容"
 }
-手書き文字が読みにくい場合は、文脈から推測するか、空欄にしてください。
 """
 
-def analyze_with_gemini(image_path):
-    # モデル名を 'gemini-1.5-flash' に固定します（models/ や -latest を付けない）
+def analyze_with_gemini(uploaded_file):
+    # エラー回避のため、モデル名を最も標準的なものに固定
     model = genai.GenerativeModel('gemini-1.5-flash')
     
-    # 画像ファイルをGeminiに読み込ませる形式に変換
-    sample_file = genai.upload_file(path=image_path, display_name="RaceSheet")
+    # 画像データを直接読み込む（一時ファイルを使わない方法）
+    img_data = uploaded_file.getvalue()
+    image_parts = [{"mime_type": "image/jpeg", "data": img_data}]
     
-    # 解析実行（プロンプトと画像を一緒に渡す）
-    response = model.generate_content([PROMPT, sample_file])
+    # 解析実行
+    response = model.generate_content([PROMPT, image_parts[0]])
     
-    # レスポンスからJSON部分だけを取り出す（余計な文字を削除）
+    # JSONの抽出
     text = response.text
-    json_str = text.split('```json')[-1].split('```')[0].strip()
-    
-    return json.loads(json_str)
+    try:
+        # ```json ... ``` の中身を取り出す
+        if "```json" in text:
+            json_str = text.split("```json")[1].split("```")[0].strip()
+        else:
+            json_str = text.strip()
+        return json.loads(json_str)
+    except Exception as e:
+        st.error(f"JSONパースエラー: {e}\nAIの返答: {text}")
+        return None
+
 # --- 4. メインUI ---
-st.title("🏎️ RaceLog Pro: Gemini AI Engine")
+st.title("🏎️ RaceLog Pro: Gemini Engine")
 
 if 'session_data' not in st.session_state:
     st.session_state.session_data = {}
@@ -70,51 +78,40 @@ with col1:
     uploaded = st.file_uploader("ログシートを選択", type=["jpg", "png", "jpeg"])
     if uploaded:
         st.image(uploaded, use_container_width=True)
-        if st.button("AIに読み取らせる（座標不要）"):
-            with st.spinner("Geminiが画像全体を構造解析中..."):
-                try:
-                    # 画像を一時ファイルとして保存
-                    with open("temp_img.jpg", "wb") as f:
-                        f.write(uploaded.getbuffer())
-                    
-                    result = analyze_with_gemini("temp_img.jpg")
-                    key = result["header"]["No"] or f"Unknown_{len(st.session_state.session_data)}"
+        if st.button("✨ AI解析を実行"):
+            with st.spinner("Geminiが構造を読み取り中..."):
+                result = analyze_with_gemini(uploaded)
+                if result:
+                    key = result["header"].get("No") or f"Session_{len(st.session_state.session_data)}"
                     st.session_state.session_data[key] = result
-                    st.success("解析完了！")
-                except Exception as e:
-                    st.error(f"解析エラー: {e}")
+                    st.success("解析成功！")
 
 with col2:
-   if st.session_state.session_data:
-        selected_no = st.selectbox("確認・修正中:", list(st.session_state.session_data.keys()))
+    # 修正済み：session_state の重複を削除
+    if st.session_state.session_data:
+        selected_no = st.selectbox("確認・修正中のNo:", list(st.session_state.session_data.keys()))
         data = st.session_state.session_data[selected_no]
         
-        st.subheader("2. 解析結果の確認")
-        # ヘッダー編集
+        st.subheader("2. データの確認・修正")
+        # ヘッダー
         h_df = pd.DataFrame([data["header"]])
-        edited_h = st.data_editor(h_df, hide_index=True, key=f"h_{selected_no}")
+        data["header"] = st.data_editor(h_df, hide_index=True, key=f"h_{selected_no}").iloc[0].to_dict()
         
-        # テーブル編集
+        # テーブル
         t_df = pd.DataFrame(data["table"])
-        edited_t = st.data_editor(t_df, hide_index=True, height=500, key=f"t_{selected_no}")
+        data["table"] = st.data_editor(t_df, hide_index=True, height=400, key=f"t_{selected_no}").to_dict('records')
         
-        # フィードバック
-        data["feedback"] = st.text_area("フィードバック", data["feedback"])
+        st.subheader("3. フィードバック")
+        data["feedback"] = st.text_area("内容", data["feedback"], key=f"f_{selected_no}")
 
-        # 保存
-        if st.button("このデータをExcel出力用に確定"):
-            data["header"] = edited_h.iloc[0].to_dict()
-            data["table"] = edited_t.to_dict('records')
-            st.toast("保存しました")
-
-# --- Excelダウンロード ---
+# --- 5. Excel出力 ---
 if st.session_state.session_data:
     st.divider()
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         for no, d in st.session_state.session_data.items():
+            # ヘッダーとテーブルを一つのシートに
             pd.DataFrame([d["header"]]).to_excel(writer, sheet_name=f"No_{no}", index=False)
             pd.DataFrame(d["table"]).to_excel(writer, sheet_name=f"No_{no}", startrow=3, index=False)
-            pd.DataFrame([{"フィードバック": d["feedback"]}]).to_excel(writer, sheet_name=f"No_{no}", startrow=38, index=False)
     
-    st.download_button("📈 全シートをExcelでダウンロード", buf.getvalue(), "RaceReport_Final.xlsx")
+    st.download_button("📈 全データをExcelで保存", buf.getvalue(), "RaceLog_Final.xlsx")
