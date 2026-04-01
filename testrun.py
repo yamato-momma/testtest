@@ -4,112 +4,127 @@ from google.cloud import vision
 from google.oauth2 import service_account
 import io
 import json
+import re
 
-# --- ページ設定とデザイン ---
-st.set_page_config(page_title="RaceLog Pro", layout="wide")
+# --- 1. ページ設定とデザイン (スタイリッシュなUI) ---
+st.set_page_config(page_title="RaceLog Pro", layout="wide", page_icon="🏎️")
 
-# スタイリッシュなCSS
 st.markdown("""
     <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
-    .reportview-container .main .block-container { padding-top: 2rem; }
-    h1 { color: #1e3a8a; border-left: 5px solid #1e3a8a; padding-left: 10px; }
+    .stApp { background-color: #f8f9fa; }
+    .stButton>button { 
+        width: 100%; border-radius: 8px; height: 3.5em; 
+        background-color: #1e3a8a; color: white; font-weight: bold;
+        transition: 0.3s;
+    }
+    .stButton>button:hover { background-color: #3b82f6; border: none; }
+    .status-box { 
+        padding: 20px; border-radius: 10px; border-left: 8px solid #1e3a8a;
+        background-color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    h1 { color: #1e3a8a; font-family: 'Helvetica Neue', sans-serif; }
     </style>
-    """, unsafe_allow_stdio=True)
+    """, unsafe_allow_html=True)
 
-st.title("🏎️ RaceLog Pro: 走行データ解析")
+st.title("🏎️ RaceLog Pro")
+st.caption("手書き走行データシート ➔ マルチシートExcel変換")
 
-# --- セッション状態の初期化 (走行会データを貯める用) ---
+# --- 2. セッション状態の初期化 (走行会データを貯める) ---
 if 'all_data' not in st.session_state:
-    st.session_state.all_data = {} # { "No_1": df, "No_2": df }
+    st.session_state.all_data = {} # { "No_01": df, "No_02": df }
 
-# --- Google Cloud 認証 ---
+# --- 3. Google Cloud 認証 ---
 if "gcp_service_account" in st.secrets:
-    info = json.loads(st.secrets["gcp_service_account"])
-    credentials = service_account.Credentials.from_service_account_info(info)
-    client = vision.ImageAnnotatorClient(credentials=credentials)
+    try:
+        info = json.loads(st.secrets["gcp_service_account"])
+        credentials = service_account.Credentials.from_service_account_info(info)
+        client = vision.ImageAnnotatorClient(credentials=credentials)
+    except Exception as e:
+        st.error(f"認証情報の形式が正しくありません: {e}")
+        st.stop()
 else:
-    st.error("GCP Secretsが設定されていません。")
+    st.error("Secretsに 'gcp_service_account' が設定されていません。")
     st.stop()
 
-# --- サイドパネル (設定) ---
+# --- 4. サイドバー設定 ---
 with st.sidebar:
-    st.header("⚙️ 設定")
-    event_name = st.text_input("走行会名称", "2024_走行会")
-    if st.button("全データをリセット"):
+    st.header("⚙️ システム設定")
+    event_name = st.text_input("走行会・イベント名", "2026_Circuit_Run")
+    st.divider()
+    if st.button("🔴 全データをリセット"):
         st.session_state.all_data = {}
         st.rerun()
 
-# --- メイン画面 ---
-tab1, tab2 = st.tabs(["📤 データ読み取り", "📊 蓄積データ確認・出力"])
+# --- 5. メイン機能 (タブ分け) ---
+tab1, tab2 = st.tabs(["📤 アップロード・解析", "📊 蓄積データ・エクスポート"])
 
 with tab1:
-    col1, col2 = st.columns([1, 1])
+    col_up, col_res = st.columns([1, 1])
     
-    with col1:
-        uploaded_file = st.file_uploader("ログシートの画像をアップロード", type=["jpg", "jpeg", "png"])
+    with col_up:
+        uploaded_file = st.file_uploader("ログシートの写真をアップロード", type=["jpg", "jpeg", "png"])
         if uploaded_file:
-            st.image(uploaded_file, caption="解析対象", use_container_width=True)
+            st.image(uploaded_file, caption="スキャン中...", use_container_width=True)
 
-    with col2:
+    with col_res:
         if uploaded_file:
-            if st.button("AI解析を実行"):
-                with st.spinner('高度なレイアウト解析中...'):
+            if st.button("✨ AI解析を実行"):
+                with st.spinner('手書き文字を構造化しています...'):
                     content = uploaded_file.read()
                     image = vision.Image(content=content)
+                    
+                    # Google Vision API 呼び出し
                     response = client.document_text_detection(image=image)
+                    full_text = response.full_text_annotation.text
                     
-                    # --- データの抽出ロジック (簡易版) ---
-                    # 本来は座標(bounding_box)で判定しますが、ここではデモ用にテキスト解析を行います
-                    all_text = response.full_text_annotation.text
-                    lines = all_text.split('\n')
+                    # --- データ抽出ロジック ---
+                    # 右上のNoを抽出 (例: No.01-01 -> 01-01)
+                    no_match = re.search(r"No\.?\s?([\d-]+)", full_text)
+                    sheet_no = no_match.group(1) if no_match else f"Unknown_{len(st.session_state.all_data)+1}"
                     
-                    # Noの抽出
-                    sheet_no = "Unknown"
-                    for line in lines:
-                        if "No" in line:
-                            sheet_no = line.replace("No", "").strip()
-
-                    # 表データの作成 (送付画像の項目に準拠)
-                    # ここで読み取った値を辞書にまとめます
-                    # ※ 実際の運用では座標による高精度なパースが必要になります
-                    items = ["Lap Time", "内圧(FL/FR)", "内圧(RL/RR)", "表面温度", "ディスク温度", "HV/LV電圧"]
-                    data_rows = []
-                    for i in range(1, 11): # 10周分
-                        data_rows.append({
-                            "Lap": i,
-                            "Lap Time": "", "内圧_FL": "", "内圧_FR": "", "内圧_RL": "", "内圧_RR": "",
-                            "表面温度": "", "ディスク温度": "", "HV電圧": "", "LV電圧": ""
+                    # ラップタイムの抽出 (数字.数字 のパターンを探す)
+                    times = re.findall(r"\b\d{2}\.\d{2}\b", full_text)
+                    
+                    # 表の雛形作成 (画像の項目を網羅)
+                    data = []
+                    for i in range(1, 34): # 最大33ラップ想定
+                        t = times[i-1] if i <= len(times) else ""
+                        data.append({
+                            "Lap": i, "Time": t, 
+                            "内圧_FL": "", "内圧_FR": "", "内圧_RL": "", "内圧_RR": "",
+                            "表面温度_FL": "", "表面温度_FR": "", "表面温度_RL": "", "表面温度_RR": "",
+                            "HV電圧": "", "LV電圧": ""
                         })
                     
-                    current_df = pd.DataFrame(data_rows)
-                    
-                    # セッションに保存
-                    st.session_state.all_data[f"No_{sheet_no}"] = current_df
-                    st.success(f"No.{sheet_no} のデータを解析し、一時保存しました。")
-                    st.data_editor(current_df) # 画面上で修正可能に
+                    new_df = pd.DataFrame(data)
+                    st.session_state.all_data[sheet_no] = new_df
+                    st.success(f"シート No.{sheet_no} を認識しました！")
+
+            # 個別データの編集
+            for s_no in st.session_state.all_data.keys():
+                if st.checkbox(f"No.{s_no} のデータを手動修正する"):
+                    st.session_state.all_data[s_no] = st.data_editor(st.session_state.all_data[s_no], key=f"editor_{s_no}")
 
 with tab2:
     if st.session_state.all_data:
-        st.write(f"現在 **{len(st.session_state.all_data)}枚** のシートを保持しています。")
+        st.subheader(f"📅 {event_name} まとめ")
+        st.write(f"現在の保存済みシート: {', '.join(st.session_state.all_data.keys())}")
         
-        # Excel書き出しロジック
+        # Excel作成 (マルチシート)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            for sheet_name, df in st.session_state.all_data.items():
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+            for s_no, df in st.session_state.all_data.items():
+                df.to_excel(writer, sheet_name=f"No_{s_no}", index=False)
         
         st.download_button(
-            label="📈 走行会まとめExcelをダウンロード",
+            label="📥 全シートをまとめてExcelダウンロード",
             data=output.getvalue(),
-            file_name=f"{event_name}_results.xlsx",
+            file_name=f"{event_name}_RaceLog.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        # プレビュー表示
-        for name, df in st.session_state.all_data.items():
-            with st.expander(f"詳細確認: {name}"):
-                st.dataframe(df)
+        # プレビュー
+        selected_no = st.selectbox("プレビューするNoを選択", options=list(st.session_state.all_data.keys()))
+        st.dataframe(st.session_state.all_data[selected_no], use_container_width=True)
     else:
-        st.info("データがまだありません。タブ1から画像をアップロードしてください。")
+        st.info("まだ解析データがありません。タブ1から画像をアップロードしてください。")
