@@ -45,7 +45,7 @@ PROMPT = """
 """
 
 def analyze_with_gemini(uploaded_file):
-    # 【重要】NotFoundエラー対策：models/ を付け、明示的に指定
+    # 最新モデルを指定
     model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
     
     # 画像データの準備
@@ -96,15 +96,15 @@ with col2:
         st.subheader("2. データの確認・修正")
         # ヘッダー情報
         h_df = pd.DataFrame(list(data["header"].items()), columns=["項目", "値"])
-        edited_h = st.data_editor(h_df, hide_index=True, use_container_width=True)
+        edited_h = st.data_editor(h_df, hide_index=True, use_container_width=True, key=f"h_edit_{selected_no}")
         
         # 数値テーブル
         st.subheader("3. タイム・タイヤ詳細")
         t_df = pd.DataFrame(data["table"])
-        edited_t = st.data_editor(t_df, hide_index=True, height=450, use_container_width=True)
+        edited_t = st.data_editor(t_df, hide_index=True, height=450, use_container_width=True, key=f"t_edit_{selected_no}")
         
         st.subheader("4. フィードバック")
-        data["feedback"] = st.text_area("内容", data["feedback"])
+        data["feedback"] = st.text_area("内容", data["feedback"], key=f"f_edit_{selected_no}")
 
         # 保存用反映
         if st.button("修正内容を反映して確定"):
@@ -118,4 +118,11 @@ if st.session_state.session_data:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         for no, d in st.session_state.session_data.items():
-            sheet_name = f"No
+            # シート名エラーの修正箇所
+            sheet_name = f"No_{no}".replace("-", "_").replace(".", "_")[:30]
+            # ヘッダー
+            pd.DataFrame(list(d["header"].items())).to_excel(writer, sheet_name=sheet_name, index=False, header=False)
+            # テーブル
+            pd.DataFrame(d["table"]).to_excel(writer, sheet_name=sheet_name, startrow=len(d["header"])+2, index=False)
+    
+    st.download_button("📈 全シートを一括ダウンロード (Excel)", buf.getvalue(), "RaceLog_Output.xlsx")
