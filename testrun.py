@@ -5,7 +5,7 @@ import io
 import json
 
 # --- 1. デザイン設定 ---
-st.set_page_config(page_title="RaceLog Pro v7", layout="wide")
+st.set_page_config(page_title="TUFT Rog R", layout="wide")
 st.markdown("""
     <style>
     .stApp { background-color: #ffffff !important; }
@@ -70,8 +70,8 @@ if 'session_data' not in st.session_state:
 
 uploaded = st.file_uploader("ログシートを選択", type=["jpg", "png", "jpeg"])
 if uploaded:
-    if st.button("✨ 精密解析を実行"):
-        with st.spinner("最適なAIモデルを自動選択して解析中..."):
+    if st.button("実行"):
+        with st.spinner("解析中..."):
             result = analyze_with_gemini(uploaded)
             if result:
                 key = result["header"].get("No") or f"Session_{len(st.session_state.session_data)}"
