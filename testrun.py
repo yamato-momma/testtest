@@ -34,26 +34,33 @@ PROMPT = """
 
 def analyze_with_gemini(uploaded_file):
     try:
-        # 【解決策】モデルのフルパスを明示的に指定
-        model = genai.GenerativeModel(model_name='gemini-1.5-flash')
+        # 【解決策】利用可能なモデルをリストアップし、1.5-flash または最新版を自動選択
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 優先順位をつけてモデルを選択
+        target_model = None
+        for m in ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro-vision"]:
+            if m in available_models:
+                target_model = m
+                break
+        
+        if not target_model:
+            target_model = available_models[0] # 何でもいいから動くものを選ぶ
+
+        model = genai.GenerativeModel(model_name=target_model)
         
         img_data = uploaded_file.getvalue()
-        
-        # 解析実行
         response = model.generate_content([
             PROMPT,
             {'mime_type': 'image/jpeg', 'data': img_data}
         ])
         
         text = response.text
-        # JSONを抽出
         start_idx = text.find('{')
         end_idx = text.rfind('}') + 1
-        json_str = text[start_idx:end_idx]
-        return json.loads(json_str)
+        return json.loads(text[start_idx:end_idx])
         
     except Exception as e:
-        # 詳細なエラーを画面に出す
         st.error(f"解析エラー詳細: {e}")
         return None
 
@@ -66,12 +73,12 @@ if 'session_data' not in st.session_state:
 uploaded = st.file_uploader("ログシートを選択", type=["jpg", "png", "jpeg"])
 if uploaded:
     if st.button("✨ AI解析を実行"):
-        with st.spinner("AIが通信プロトコルを確立中..."):
+        with st.spinner("利用可能な最新AIモデルを探索して解析中..."):
             result = analyze_with_gemini(uploaded)
             if result:
                 key = result["header"].get("No") or f"Session_{len(st.session_state.session_data)}"
                 st.session_state.session_data[key] = result
-                st.success("解析成功！")
+                st.success(f"解析成功！ (使用モデル: {key})")
 
 if st.session_state.session_data:
     selected_no = st.selectbox("確認・修正するNo:", list(st.session_state.session_data.keys()))
@@ -88,7 +95,6 @@ if st.session_state.session_data:
     st.subheader("詳細データ（タイム・内圧など）")
     data["table"] = st.data_editor(pd.DataFrame(data["table"]), hide_index=True, height=400).to_dict('records')
 
-    # Excel出力
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         for no, d in st.session_state.session_data.items():
